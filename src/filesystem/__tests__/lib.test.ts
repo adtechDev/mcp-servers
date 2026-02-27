@@ -423,21 +423,17 @@ describe('Lib Functions', () => {
           { oldText: 'line2', newText: 'modified line2' }
         ];
         
-        mockFs.rename.mockResolvedValueOnce(undefined);
         
         const result = await applyFileEdits('/test/file.txt', edits, false);
         
         expect(result).toContain('modified line2');
-        // Should write to temporary file then rename
+        // Should write directly to the target file (no temp-file + rename)
         expect(mockFs.writeFile).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.txt\.[a-f0-9]+\.tmp$/),
+          '/test/file.txt',
           'line1\nmodified line2\nline3\n',
-          'utf-8'
+          { encoding: "utf-8", flag: 'w' }
         );
-        expect(mockFs.rename).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.txt\.[a-f0-9]+\.tmp$/),
-          '/test/file.txt'
-        );
+        expect(mockFs.rename).not.toHaveBeenCalled();
       });
 
       it('treats dollar signs in replacement text literally', async () => {
@@ -445,14 +441,13 @@ describe('Lib Functions', () => {
           { oldText: 'line2', newText: "price=$$; match=$&; before=$`; after=$'" }
         ];
 
-        mockFs.rename.mockResolvedValueOnce(undefined);
 
         await applyFileEdits('/test/file.txt', edits, false);
 
         expect(mockFs.writeFile).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.txt\.[a-f0-9]+\.tmp$/),
+          '/test/file.txt',
           "line1\nprice=$$; match=$&; before=$`; after=$'\nline3\n",
-          'utf-8'
+          { encoding: "utf-8", flag: 'w' }
         );
       });
 
@@ -473,18 +468,13 @@ describe('Lib Functions', () => {
           { oldText: 'line3', newText: 'third line' }
         ];
         
-        mockFs.rename.mockResolvedValueOnce(undefined);
         
         await applyFileEdits('/test/file.txt', edits, false);
         
         expect(mockFs.writeFile).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.txt\.[a-f0-9]+\.tmp$/),
+          '/test/file.txt',
           'first line\nline2\nthird line\n',
-          'utf-8'
-        );
-        expect(mockFs.rename).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.txt\.[a-f0-9]+\.tmp$/),
-          '/test/file.txt'
+          { encoding: "utf-8", flag: 'w' }
         );
       });
 
@@ -495,18 +485,13 @@ describe('Lib Functions', () => {
           { oldText: 'line2', newText: 'modified line2' }
         ];
         
-        mockFs.rename.mockResolvedValueOnce(undefined);
         
         await applyFileEdits('/test/file.txt', edits, false);
         
         expect(mockFs.writeFile).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.txt\.[a-f0-9]+\.tmp$/),
+          '/test/file.txt',
           '  line1\n    modified line2\n  line3\n',
-          'utf-8'
-        );
-        expect(mockFs.rename).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.txt\.[a-f0-9]+\.tmp$/),
-          '/test/file.txt'
+          { encoding: "utf-8", flag: 'w' }
         );
       });
 
@@ -529,18 +514,13 @@ describe('Lib Functions', () => {
           }
         ];
         
-        mockFs.rename.mockResolvedValueOnce(undefined);
         
         await applyFileEdits('/test/file.js', edits, false);
         
         expect(mockFs.writeFile).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.js\.[a-f0-9]+\.tmp$/),
+          '/test/file.js',
           'function test() {\n  console.log("world");\n  console.log("test");\n  return false;\n}',
-          'utf-8'
-        );
-        expect(mockFs.rename).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.js\.[a-f0-9]+\.tmp$/),
-          '/test/file.js'
+          { encoding: "utf-8", flag: 'w' }
         );
       });
 
@@ -554,18 +534,13 @@ describe('Lib Functions', () => {
           }
         ];
         
-        mockFs.rename.mockResolvedValueOnce(undefined);
         
         await applyFileEdits('/test/file.js', edits, false);
         
         expect(mockFs.writeFile).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.js\.[a-f0-9]+\.tmp$/),
+          '/test/file.js',
           '    if (condition) {\n        doSomethingElse();\n        doAnotherThing();\n    }',
-          'utf-8'
-        );
-        expect(mockFs.rename).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.js\.[a-f0-9]+\.tmp$/),
-          '/test/file.js'
+          { encoding: "utf-8", flag: 'w' }
         );
       });
 
@@ -576,18 +551,13 @@ describe('Lib Functions', () => {
           { oldText: 'line2', newText: 'modified line2' }
         ];
         
-        mockFs.rename.mockResolvedValueOnce(undefined);
         
         await applyFileEdits('/test/file.txt', edits, false);
         
         expect(mockFs.writeFile).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.txt\.[a-f0-9]+\.tmp$/),
+          '/test/file.txt',
           'line1\nmodified line2\nline3\n',
-          'utf-8'
-        );
-        expect(mockFs.rename).toHaveBeenCalledWith(
-          expect.stringMatching(/\/test\/file\.txt\.[a-f0-9]+\.tmp$/),
-          '/test/file.txt'
+          { encoding: "utf-8", flag: 'w' }
         );
       });
     });
