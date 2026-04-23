@@ -11,6 +11,7 @@ import fs from "fs/promises";
 import { createReadStream } from "fs";
 import path from "path";
 import { z } from "zod";
+import { fileTypeFromFile } from "file-type";
 import { minimatch } from "minimatch";
 import { normalizePath, expandHome } from './path-utils.js';
 import { getValidRootDirectories } from './roots-utils.js';
@@ -266,21 +267,25 @@ server.registerTool(
   },
   async (args: z.infer<typeof ReadMediaFileArgsSchema>) => {
     const validPath = await validatePath(args.path);
-    const extension = path.extname(validPath).toLowerCase();
-    const mimeTypes: Record<string, string> = {
-      ".png": "image/png",
-      ".jpg": "image/jpeg",
-      ".jpeg": "image/jpeg",
-      ".gif": "image/gif",
-      ".webp": "image/webp",
-      ".bmp": "image/bmp",
-      ".svg": "image/svg+xml",
-      ".mp3": "audio/mpeg",
-      ".wav": "audio/wav",
-      ".ogg": "audio/ogg",
-      ".flac": "audio/flac",
-    };
-    const mimeType = mimeTypes[extension] || "application/octet-stream";
+    const detected = await fileTypeFromFile(validPath);
+    let mimeType: string | undefined = detected?.mime;
+    if (!mimeType) {
+      const extension = path.extname(validPath).toLowerCase();
+      const mimeTypes: Record<string, string> = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".svg": "image/svg+xml",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".flac": "audio/flac",
+      };
+      mimeType = mimeTypes[extension] || "application/octet-stream";
+    }
     const data = await readFileAsBase64Stream(validPath);
 
     const type = mimeType.startsWith("image/")
