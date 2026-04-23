@@ -11,6 +11,7 @@ import { createReadStream } from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
 import { z } from "zod";
+import { fileTypeFromFile } from "file-type";
 import { minimatch } from "minimatch";
 import { normalizePath, expandHome } from './path-utils.js';
 import { getValidRootDirectories } from './roots-utils.js';
@@ -278,21 +279,35 @@ server.registerTool(
   },
   async (args: z.infer<typeof ReadMediaFileArgsSchema>) => {
     const validPath = await validatePath(args.path);
-    const extension = path.extname(validPath).toLowerCase();
-    const mimeTypes: Record<string, string> = {
-      ".png": "image/png",
-      ".jpg": "image/jpeg",
-      ".jpeg": "image/jpeg",
-      ".gif": "image/gif",
-      ".webp": "image/webp",
-      ".bmp": "image/bmp",
-      ".svg": "image/svg+xml",
-      ".mp3": "audio/mpeg",
-      ".wav": "audio/wav",
-      ".ogg": "audio/ogg",
-      ".flac": "audio/flac",
-    };
-    const mimeType = mimeTypes[extension] || "application/octet-stream";
+    // Detect the MIME type from the file's magic bytes (content) so a file with
+    // a missing or wrong extension is still classified correctly. fileTypeFromFile
+    // can reject on a read (e.g. an End-Of-Stream on files smaller than the
+    // detector's sample size), so guard it and fall back to the extension map
+    // rather than letting the whole tool call fail.
+    let mimeType: string | undefined;
+    try {
+      const detected = await fileTypeFromFile(validPath);
+      mimeType = detected?.mime;
+    } catch {
+      mimeType = undefined;
+    }
+    if (!mimeType) {
+      const extension = path.extname(validPath).toLowerCase();
+      const mimeTypes: Record<string, string> = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".svg": "image/svg+xml",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".flac": "audio/flac",
+      };
+      mimeType = mimeTypes[extension] || "application/octet-stream";
+    }
     const data = await readFileAsBase64Stream(validPath);
 
     // Map the MIME type to a valid MCP content block. The spec only allows
