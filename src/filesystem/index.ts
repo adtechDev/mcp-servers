@@ -12,6 +12,7 @@ import path from "path";
 import { pathToFileURL } from "url";
 import { z } from "zod";
 import { fileTypeFromFile } from "file-type";
+import sharp from "sharp";
 import { minimatch } from "minimatch";
 import { normalizePath, expandHome } from './path-utils.js';
 import { getValidRootDirectories } from './roots-utils.js';
@@ -186,9 +187,32 @@ async function readFileAsBase64Stream(filePath: string): Promise<string> {
   });
 }
 
+// Max dimension (px) the model accepts per side in many-image requests; larger
+// images are rejected by the API, so we downscale to fit within this bound.
+const MAX_IMAGE_DIMENSION = 2000;
+
+// Reads a raster image as base64, downscaling it to fit within MAX_IMAGE_DIMENSION
+// on both sides (preserving aspect ratio and format) when either side is larger.
+// Falls back to the original bytes when the image is already small enough, or when
+// sharp cannot decode/re-encode it (e.g. bmp, which sharp reads but cannot write).
+async function readImageAsBase64(filePath: string): Promise<string> {
+  try {
+    const meta = await sharp(filePath).metadata();
+    if ((meta.width ?? 0) > MAX_IMAGE_DIMENSION || (meta.height ?? 0) > MAX_IMAGE_DIMENSION) {
+      const resized = await sharp(filePath)
+        .resize({ width: MAX_IMAGE_DIMENSION, height: MAX_IMAGE_DIMENSION, fit: "inside", withoutEnlargement: true })
+        .toBuffer();
+      return resized.toString("base64");
+    }
+  } catch {
+    // Not decodable/re-encodable by sharp — fall through to the original bytes.
+  }
+  return readFileAsBase64Stream(filePath);
+}
+
 // Tool registrations
 
-// read_file (deprecated) and read_text_file
+// read_text_file
 const readTextFileHandler = async (args: z.infer<typeof ReadTextFileArgsSchema>) => {
   const validPath = await validatePath(args.path);
 
@@ -211,17 +235,17 @@ const readTextFileHandler = async (args: z.infer<typeof ReadTextFileArgsSchema>)
   };
 };
 
-server.registerTool(
-  "read_file",
-  {
-    title: "Read File (Deprecated)",
-    description: "Read the complete contents of a file as text. DEPRECATED: Use read_text_file instead.",
-    inputSchema: ReadTextFileArgsSchema.shape,
-    outputSchema: { content: z.string() },
-    annotations: { readOnlyHint: true, openWorldHint: false }
-  },
-  readTextFileHandler
-);
+// server.registerTool(
+//   "read_file",
+//   {
+//     title: "Read File (Deprecated)",
+//     description: "Read the complete contents of a file as text. DEPRECATED: Use read_text_file instead.",
+//     inputSchema: ReadTextFileArgsSchema.shape,
+//     outputSchema: { content: z.string() },
+//     annotations: { readOnlyHint: true, openWorldHint: false }
+//   },
+//   readTextFileHandler
+// );
 
 server.registerTool(
   "read_text_file",
@@ -279,36 +303,41 @@ server.registerTool(
   },
   async (args: z.infer<typeof ReadMediaFileArgsSchema>) => {
     const validPath = await validatePath(args.path);
-    // Detect the MIME type from the file's magic bytes (content) so a file with
-    // a missing or wrong extension is still classified correctly. fileTypeFromFile
-    // can reject on a read (e.g. an End-Of-Stream on files smaller than the
-    // detector's sample size), so guard it and fall back to the extension map
-    // rather than letting the whole tool call fail.
+    const mimeTypes: Record<string, string> = {
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+      ".bmp": "image/bmp",
+      ".svg": "image/svg+xml",
+      ".mp3": "audio/mpeg",
+      ".wav": "audio/wav",
+      ".ogg": "audio/ogg",
+      ".flac": "audio/flac",
+    };
+    // Detect by magic bytes (guard: fileTypeFromFile can throw End-Of-Stream on
+    // tiny files); fall back to the extension when content detection finds nothing.
     let mimeType: string | undefined;
     try {
-      const detected = await fileTypeFromFile(validPath);
-      mimeType = detected?.mime;
+      mimeType = (await fileTypeFromFile(validPath))?.mime;
     } catch {
       mimeType = undefined;
     }
     if (!mimeType) {
       const extension = path.extname(validPath).toLowerCase();
-      const mimeTypes: Record<string, string> = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-        ".bmp": "image/bmp",
-        ".svg": "image/svg+xml",
-        ".mp3": "audio/mpeg",
-        ".wav": "audio/wav",
-        ".ogg": "audio/ogg",
-        ".flac": "audio/flac",
-      };
-      mimeType = mimeTypes[extension] || "application/octet-stream";
+      mimeType = mimeTypes[extension];
     }
-    const data = await readFileAsBase64Stream(validPath);
+    // The detected type must be a supported media type; otherwise treat it as an
+    // opaque octet-stream so a non-listed type is never surfaced as image/audio.
+    if (!mimeType || !Object.values(mimeTypes).includes(mimeType)) {
+      mimeType = "application/octet-stream";
+    }
+    // Raster images are downscaled if they exceed the model's max dimension; SVG
+    // (vector) and all non-image files are returned byte-for-byte.
+    const data = mimeType.startsWith("image/") && mimeType !== "image/svg+xml"
+      ? await readImageAsBase64(validPath)
+      : await readFileAsBase64Stream(validPath);
 
     // Map the MIME type to a valid MCP content block. The spec only allows
     // text, image, audio, resource_link, and resource — so non-image/audio
@@ -320,9 +349,9 @@ server.registerTool(
         : mimeType.startsWith("audio/")
           ? { type: "audio" as const, data, mimeType }
           : {
-              type: "resource" as const,
-              resource: { uri: pathToFileURL(validPath).href, mimeType, blob: data }
-            };
+            type: "resource" as const,
+            resource: { uri: pathToFileURL(validPath).href, mimeType, blob: data }
+          };
     return {
       content: [contentItem],
       structuredContent: { content: [contentItem] }
@@ -532,8 +561,7 @@ server.registerTool(
 
     // Format the output
     const formattedEntries = sortedEntries.map(entry =>
-      `${entry.isDirectory ? "[DIR]" : "[FILE]"} ${entry.name.padEnd(30)} ${
-        entry.isDirectory ? "" : formatSize(entry.size).padStart(10)
+      `${entry.isDirectory ? "[DIR]" : "[FILE]"} ${entry.name.padEnd(30)} ${entry.isDirectory ? "" : formatSize(entry.size).padStart(10)
       }`
     );
 
@@ -778,7 +806,7 @@ server.server.oninitialized = async () => {
   } else {
     if (allowedDirectories.length > 0) {
       console.error("Client does not support MCP Roots, using allowed directories set from server args:", allowedDirectories);
-    }else{
+    } else {
       throw new Error(`Server cannot operate: No allowed directories available. Server was started without command-line directories and client either does not support MCP roots protocol or provided empty roots. Please either: 1) Start server with directory arguments, or 2) Use a client that supports MCP roots protocol and provides valid root directories.`);
     }
   }
