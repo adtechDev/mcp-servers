@@ -235,17 +235,17 @@ const readTextFileHandler = async (args: z.infer<typeof ReadTextFileArgsSchema>)
   };
 };
 
-// server.registerTool(
-//   "read_file",
-//   {
-//     title: "Read File (Deprecated)",
-//     description: "Read the complete contents of a file as text. DEPRECATED: Use read_text_file instead.",
-//     inputSchema: ReadTextFileArgsSchema.shape,
-//     outputSchema: { content: z.string() },
-//     annotations: { readOnlyHint: true, openWorldHint: false }
-//   },
-//   readTextFileHandler
-// );
+server.registerTool(
+  "read_file",
+  {
+    title: "Read File (Deprecated)",
+    description: "Read the complete contents of a file as text. DEPRECATED: Use read_text_file instead.",
+    inputSchema: ReadTextFileArgsSchema.shape,
+    outputSchema: { content: z.string() },
+    annotations: { readOnlyHint: true, openWorldHint: false }
+  },
+  readTextFileHandler
+);
 
 server.registerTool(
   "read_text_file",
