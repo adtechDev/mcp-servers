@@ -2,6 +2,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SubscribeRequestSchema, UnsubscribeRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -197,9 +198,10 @@ export class KnowledgeGraphManager {
     // Create a Set of filtered entity names for quick lookup
     const filteredEntityNames = new Set(filteredEntities.map(e => e.name));
   
-    // Filter relations to only include those between filtered entities
+    // Include relations where at least one endpoint matches the search results.
+    // This lets callers discover connections to nodes outside the result set.
     const filteredRelations = graph.relations.filter(r => 
-      filteredEntityNames.has(r.from) && filteredEntityNames.has(r.to)
+      filteredEntityNames.has(r.from) || filteredEntityNames.has(r.to)
     );
   
     const filteredGraph: KnowledgeGraph = {
@@ -219,9 +221,12 @@ export class KnowledgeGraphManager {
     // Create a Set of filtered entity names for quick lookup
     const filteredEntityNames = new Set(filteredEntities.map(e => e.name));
   
-    // Filter relations to only include those between filtered entities
+    // Include relations where at least one endpoint is in the requested set.
+    // Previously this required BOTH endpoints, which meant relations from a
+    // requested node to an unrequested node were silently dropped — making it
+    // impossible to discover a node's connections without reading the full graph.
     const filteredRelations = graph.relations.filter(r => 
-      filteredEntityNames.has(r.from) && filteredEntityNames.has(r.to)
+      filteredEntityNames.has(r.from) || filteredEntityNames.has(r.to)
     );
   
     const filteredGraph: KnowledgeGraph = {
@@ -254,6 +259,20 @@ const server = new McpServer({
   version: "0.6.3",
 });
 
+const RESOURCE_URI = "memory://knowledge-graph";
+
+// Track which resource URIs the connected client has subscribed to, so we only
+// emit notifications/resources/updated to a client that asked for them.
+const resourceSubscribers = new Set<string>();
+
+// Notify subscribers that the knowledge graph resource changed. No-op when the
+// client has not subscribed.
+function notifyGraphUpdated() {
+  if (resourceSubscribers.has(RESOURCE_URI)) {
+    server.server.sendResourceUpdated({ uri: RESOURCE_URI });
+  }
+}
+
 // Register create_entities tool
 server.registerTool(
   "create_entities",
@@ -265,10 +284,17 @@ server.registerTool(
     },
     outputSchema: {
       entities: z.array(EntitySchema)
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
     }
   },
   async ({ entities }) => {
     const result = await knowledgeGraphManager.createEntities(entities);
+    notifyGraphUpdated();
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       structuredContent: { entities: result }
@@ -287,10 +313,17 @@ server.registerTool(
     },
     outputSchema: {
       relations: z.array(RelationSchema)
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
     }
   },
   async ({ relations }) => {
     const result = await knowledgeGraphManager.createRelations(relations);
+    notifyGraphUpdated();
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       structuredContent: { relations: result }
@@ -315,10 +348,17 @@ server.registerTool(
         entityName: z.string(),
         addedObservations: z.array(z.string())
       }))
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
     }
   },
   async ({ observations }) => {
     const result = await knowledgeGraphManager.addObservations(observations);
+    notifyGraphUpdated();
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       structuredContent: { results: result }
@@ -338,10 +378,17 @@ server.registerTool(
     outputSchema: {
       success: z.boolean(),
       message: z.string()
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
     }
   },
   async ({ entityNames }) => {
     await knowledgeGraphManager.deleteEntities(entityNames);
+    notifyGraphUpdated();
     return {
       content: [{ type: "text" as const, text: "Entities deleted successfully" }],
       structuredContent: { success: true, message: "Entities deleted successfully" }
@@ -364,10 +411,17 @@ server.registerTool(
     outputSchema: {
       success: z.boolean(),
       message: z.string()
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
     }
   },
   async ({ deletions }) => {
     await knowledgeGraphManager.deleteObservations(deletions);
+    notifyGraphUpdated();
     return {
       content: [{ type: "text" as const, text: "Observations deleted successfully" }],
       structuredContent: { success: true, message: "Observations deleted successfully" }
@@ -387,10 +441,17 @@ server.registerTool(
     outputSchema: {
       success: z.boolean(),
       message: z.string()
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
     }
   },
   async ({ relations }) => {
     await knowledgeGraphManager.deleteRelations(relations);
+    notifyGraphUpdated();
     return {
       content: [{ type: "text" as const, text: "Relations deleted successfully" }],
       structuredContent: { success: true, message: "Relations deleted successfully" }
@@ -408,6 +469,12 @@ server.registerTool(
     outputSchema: {
       entities: z.array(EntitySchema),
       relations: z.array(RelationSchema)
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     }
   },
   async () => {
@@ -431,6 +498,12 @@ server.registerTool(
     outputSchema: {
       entities: z.array(EntitySchema),
       relations: z.array(RelationSchema)
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     }
   },
   async ({ query }) => {
@@ -454,6 +527,12 @@ server.registerTool(
     outputSchema: {
       entities: z.array(EntitySchema),
       relations: z.array(RelationSchema)
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     }
   },
   async ({ names }) => {
@@ -465,12 +544,52 @@ server.registerTool(
   }
 );
 
-async function main() {
-  // Initialize memory file path with backward compatibility
-  MEMORY_FILE_PATH = await ensureMemoryFilePath();
+export function registerKnowledgeGraphResource(
+  server: McpServer,
+  manager: KnowledgeGraphManager,
+) {
+  server.registerResource(
+    "knowledge-graph",
+    RESOURCE_URI,
+    {
+      title: "Knowledge Graph",
+      description: "The full knowledge graph with all entities and relations",
+      mimeType: "application/json",
+    },
+    async (uri) => {
+      const graph = await manager.readGraph();
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(graph, null, 2),
+          },
+        ],
+      };
+    },
+  );
+}
 
-  // Initialize knowledge graph manager with the memory file path
+// Enable clients to subscribe to the knowledge-graph resource and receive
+// notifications/resources/updated when mutation tools change the graph.
+export function registerKnowledgeGraphSubscriptions(server: McpServer) {
+  server.server.registerCapabilities({ resources: { subscribe: true } });
+  server.server.setRequestHandler(SubscribeRequestSchema, async (request) => {
+    resourceSubscribers.add(request.params.uri);
+    return {};
+  });
+  server.server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
+    resourceSubscribers.delete(request.params.uri);
+    return {};
+  });
+}
+
+async function main() {
+  MEMORY_FILE_PATH = await ensureMemoryFilePath();
   knowledgeGraphManager = new KnowledgeGraphManager(MEMORY_FILE_PATH);
+  registerKnowledgeGraphResource(server, knowledgeGraphManager);
+  registerKnowledgeGraphSubscriptions(server);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

@@ -109,6 +109,32 @@ def test_git_add_specific_files(test_repository):
     assert "file2.txt" not in staged_files
     assert result == "Files staged successfully"
 
+def test_git_add_rejects_path_traversal(test_repository):
+    # Security invariant (CVE-2026-27735): a relative path escaping the
+    # repository must never be staged. Accept rejection from either the
+    # defense-in-depth validation (ValueError) or the underlying git CLI
+    # (GitCommandError) so the test asserts the property, not the layer.
+    outside = Path(test_repository.working_dir).parent / "outside.txt"
+    outside.write_text("secret")
+
+    with pytest.raises((ValueError, git.GitCommandError)):
+        git_add(test_repository, ["../outside.txt"])
+
+    staged = [path for path, _stage in test_repository.index.entries]
+    assert "../outside.txt" not in staged
+    assert "outside.txt" not in staged
+
+def test_git_add_rejects_absolute_path_outside(test_repository):
+    # An absolute path outside the repository must never be staged.
+    outside = Path(test_repository.working_dir).parent / "abs_outside.txt"
+    outside.write_text("secret")
+
+    with pytest.raises((ValueError, git.GitCommandError)):
+        git_add(test_repository, [str(outside)])
+
+    staged = [path for path, _stage in test_repository.index.entries]
+    assert "abs_outside.txt" not in staged
+
 def test_git_status(test_repository):
     result = git_status(test_repository)
 
@@ -423,3 +449,62 @@ def test_git_checkout_rejects_malicious_refs(test_repository):
 
     # Cleanup
     malicious_ref_path.unlink()
+
+
+# Tests for argument injection protection in git_show, git_create_branch,
+# git_log, and git_branch — matching the existing guards on git_diff and
+# git_checkout.
+
+def test_git_show_rejects_flag_injection(test_repository):
+    """git_show should reject revisions starting with '-'."""
+    with pytest.raises(BadName):
+        git_show(test_repository, "--output=/tmp/evil")
+
+    with pytest.raises(BadName):
+        git_show(test_repository, "-p")
+
+
+def test_git_show_rejects_malicious_refs(test_repository):
+    """git_show should reject refs starting with '-' even if they exist."""
+    sha = test_repository.head.commit.hexsha
+    refs_dir = Path(test_repository.git_dir) / "refs" / "heads"
+    malicious_ref_path = refs_dir / "--format=evil"
+    malicious_ref_path.write_text(sha)
+
+    with pytest.raises(BadName):
+        git_show(test_repository, "--format=evil")
+
+    malicious_ref_path.unlink()
+
+
+def test_git_create_branch_rejects_flag_injection(test_repository):
+    """git_create_branch should reject branch names starting with '-'."""
+    with pytest.raises(BadName):
+        git_create_branch(test_repository, "--track=evil")
+
+    with pytest.raises(BadName):
+        git_create_branch(test_repository, "-f")
+
+
+def test_git_create_branch_rejects_base_branch_flag_injection(test_repository):
+    """git_create_branch should reject base branch names starting with '-'."""
+    with pytest.raises(BadName):
+        git_create_branch(test_repository, "new-branch", "--track=evil")
+
+
+def test_git_log_rejects_timestamp_flag_injection(test_repository):
+    """git_log should reject timestamps starting with '-'."""
+    with pytest.raises(ValueError):
+        git_log(test_repository, start_timestamp="--exec=evil")
+
+    with pytest.raises(ValueError):
+        git_log(test_repository, end_timestamp="--exec=evil")
+
+
+def test_git_branch_rejects_contains_flag_injection(test_repository):
+    """git_branch should reject contains/not_contains values starting with '-'."""
+    with pytest.raises(BadName):
+        git_branch(test_repository, "local", contains="--exec=evil")
+
+    with pytest.raises(BadName):
+        git_branch(test_repository, "local", not_contains="--exec=evil")

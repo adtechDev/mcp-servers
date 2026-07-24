@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import sharp from 'sharp';
 
 describe('read_media_file', () => {
   let client: Client;
@@ -103,14 +104,23 @@ describe('read_media_file', () => {
     expect(structured.content[0].type).toBe('image');
   });
 
-  it('should error for unknown type (blob is not a valid MCP content type)', async () => {
+  it('returns an embedded resource for unknown types (never the invalid "blob" content type)', async () => {
     const filePath = path.join(testDir, 'data.xyz');
     await fs.writeFile(filePath, Buffer.from('some random binary data'));
 
-    await expect(client.callTool({
+    const result = await client.callTool({
       name: 'read_media_file',
       arguments: { path: filePath }
-    })).rejects.toThrow();
+    });
+
+    // No magic-bytes match and an unmapped extension -> application/octet-stream,
+    // returned as an embedded resource (a valid MCP content block, unlike the
+    // old type:"blob" which a strict client rejects on schema validation).
+    const structured = result.structuredContent as {
+      content: Array<{ type: string; resource?: { mimeType?: string; blob: string } }>
+    };
+    expect(structured.content[0].type).toBe('resource');
+    expect(structured.content[0].resource?.mimeType).toBe('application/octet-stream');
   });
 
   it('should detect PNG even without extension', async () => {
@@ -125,5 +135,65 @@ describe('read_media_file', () => {
     const structured = result.structuredContent as { content: Array<{ type: string; mimeType: string }> };
     expect(structured.content[0].mimeType).toBe('image/png');
     expect(structured.content[0].type).toBe('image');
+  });
+
+  it('does NOT pass through a detected type outside the allow-list (real TIFF named .png -> resource)', async () => {
+    // Real TIFF content (file-type detects image/tiff, which is NOT in the supported
+    // list) but named .png. Guards the allow-list gate: an out-of-list detected type
+    // must be demoted to an opaque octet-stream resource, never surfaced as an image.
+    const tiff = Buffer.alloc(256);
+    Buffer.from([0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00]).copy(tiff);
+    const filePath = path.join(testDir, 'actually-tiff.png');
+    await fs.writeFile(filePath, tiff);
+
+    const result = await client.callTool({
+      name: 'read_media_file',
+      arguments: { path: filePath }
+    });
+
+    const structured = result.structuredContent as {
+      content: Array<{ type: string; resource?: { mimeType?: string } }>
+    };
+    expect(structured.content[0].type).toBe('resource');
+    expect(structured.content[0].resource?.mimeType).toBe('application/octet-stream');
+  });
+
+  it('downscales an image whose dimensions exceed 2000px (aspect ratio & format preserved)', async () => {
+    const filePath = path.join(testDir, 'big.png');
+    await sharp({ create: { width: 3000, height: 1500, channels: 3, background: { r: 10, g: 20, b: 30 } } })
+      .png()
+      .toFile(filePath);
+
+    const result = await client.callTool({
+      name: 'read_media_file',
+      arguments: { path: filePath }
+    });
+
+    const structured = result.structuredContent as { content: Array<{ type: string; data: string; mimeType: string }> };
+    expect(structured.content[0].type).toBe('image');
+    expect(structured.content[0].mimeType).toBe('image/png');
+    // The returned bytes must be downscaled to fit within 2000px on the long edge,
+    // preserving aspect ratio (3000x1500 -> 2000x1000) and format (still PNG).
+    const meta = await sharp(Buffer.from(structured.content[0].data, 'base64')).metadata();
+    expect(meta.format).toBe('png');
+    expect(meta.width).toBe(2000);
+    expect(meta.height).toBe(1000);
+  });
+
+  it('returns an image within 2000px byte-for-byte (no re-encoding)', async () => {
+    const filePath = path.join(testDir, 'small.png');
+    await sharp({ create: { width: 100, height: 80, channels: 3, background: { r: 1, g: 2, b: 3 } } })
+      .png()
+      .toFile(filePath);
+    const original = await fs.readFile(filePath);
+
+    const result = await client.callTool({
+      name: 'read_media_file',
+      arguments: { path: filePath }
+    });
+
+    const structured = result.structuredContent as { content: Array<{ type: string; data: string }> };
+    // Small images are streamed unchanged, not re-encoded through sharp.
+    expect(Buffer.from(structured.content[0].data, 'base64').equals(original)).toBe(true);
   });
 });

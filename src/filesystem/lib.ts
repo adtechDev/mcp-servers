@@ -160,9 +160,27 @@ export async function readFileContent(filePath: string, encoding: string = 'utf-
 
 export async function writeFileContent(filePath: string, content: string): Promise<void> {
   try {
-    await fs.writeFile(filePath, content, { encoding: "utf-8", flag: 'w' });
+    // Security: 'wx' flag ensures exclusive creation - fails if file/symlink exists,
+    // preventing writes through pre-existing symlinks
+    await fs.writeFile(filePath, content, { encoding: "utf-8", flag: 'wx' });
   } catch (error) {
-    throw error;
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      // Security: Use atomic rename to prevent race conditions where symlinks
+      // could be created between validation and write. Rename operations
+      // replace the target file atomically and don't follow symlinks.
+      const tempPath = `${filePath}.${randomBytes(16).toString('hex')}.tmp`;
+      try {
+        await fs.writeFile(tempPath, content, 'utf-8');
+        await fs.rename(tempPath, filePath);
+      } catch (renameError) {
+        try {
+          await fs.unlink(tempPath);
+        } catch {}
+        throw renameError;
+      }
+    } else {
+      throw error;
+    }
   }
 }
 
@@ -189,7 +207,7 @@ export async function applyFileEdits(
 
     // If exact match exists, use it
     if (modifiedContent.includes(normalizedOld)) {
-      modifiedContent = modifiedContent.replace(normalizedOld, normalizedNew);
+      modifiedContent = modifiedContent.replace(normalizedOld, () => normalizedNew);
       continue;
     }
 
