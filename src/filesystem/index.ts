@@ -364,11 +364,13 @@ server.registerTool(
   {
     title: "Read Multiple Files",
     description:
-      "Read the contents of multiple files simultaneously. This is more " +
-      "efficient than reading files one by one when you need to analyze " +
-      "or compare multiple files. Each file's content is returned with its " +
+      "Read the contents of multiple text files simultaneously. This is more " +
+      "efficient than reading text files one by one when you need to analyze " +
+      "or compare multiple files. Each file's text content is returned with its " +
       "path as a reference. Failed reads for individual files won't stop " +
-      "the entire operation. Only works within allowed directories.",
+      "the entire operation. Files are read as text regardless of extension. " +
+      "Use read_media_file for images, audio, or any other binary content. " +
+      "Only works within allowed directories.",
     inputSchema: {
       paths: z.array(z.string())
         .min(1)
